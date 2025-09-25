@@ -61,9 +61,23 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const { articleId } = req.body;
-    if (!articleId) {
-      return res.status(400).json({ error: 'Article ID is required' });
+    const { articleId, articleIds } = req.body;
+
+    let articleIdList = [];
+    if (articleIds) {
+      // Handle multiple article IDs (comma-separated string or array)
+      if (Array.isArray(articleIds)) {
+        articleIdList = articleIds.filter(id => id && id.trim());
+      } else if (typeof articleIds === 'string') {
+        articleIdList = articleIds.split(',').map(id => id.trim()).filter(id => id);
+      }
+    } else if (articleId) {
+      // Handle single article ID for backward compatibility
+      articleIdList = [articleId.trim()];
+    }
+
+    if (articleIdList.length === 0) {
+      return res.status(400).json({ error: 'At least one Article ID is required' });
     }
 
     const imageUuid = uuidv4();
@@ -80,30 +94,60 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
     const result = await s3.upload(uploadParams).promise();
 
-    db.run(`INSERT OR IGNORE INTO articles (article_id) VALUES (?)`, [articleId]);
-
-    db.run(
-      `INSERT INTO images (uuid, article_id, original_name, s3_key, s3_url, content_type, size)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [imageUuid, articleId, req.file.originalname, s3Key, result.Location, req.file.mimetype, req.file.size],
-      function(err) {
-        if (err) {
-          console.error('Database error:', err);
-          return res.status(500).json({ error: 'Failed to save image metadata' });
-        }
-
-        res.json({
-          message: 'File uploaded successfully',
-          uuid: imageUuid,
-          articleId: articleId,
-          originalName: req.file.originalname,
-          url: result.Location,
-          s3Key: s3Key,
-          contentType: req.file.mimetype,
-          size: req.file.size
+    // Insert articles (ignore if they already exist)
+    const articlePromises = articleIdList.map(artId => {
+      return new Promise((resolve, reject) => {
+        db.run(`INSERT OR IGNORE INTO articles (article_id) VALUES (?)`, [artId], (err) => {
+          if (err) reject(err);
+          else resolve();
         });
-      }
-    );
+      });
+    });
+
+    await Promise.all(articlePromises);
+
+    // Insert image records for each article
+    const imagePromises = articleIdList.map(artId => {
+      return new Promise((resolve, reject) => {
+        db.run(
+          `INSERT INTO images (uuid, article_id, original_name, s3_key, s3_url, content_type, size)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [imageUuid, artId, req.file.originalname, s3Key, result.Location, req.file.mimetype, req.file.size],
+          function(err) {
+            if (err) {
+              reject(err);
+            } else {
+              resolve({
+                id: this.lastID,
+                articleId: artId,
+                uuid: imageUuid
+              });
+            }
+          }
+        );
+      });
+    });
+
+    try {
+      const insertResults = await Promise.all(imagePromises);
+
+      res.json({
+        message: 'File uploaded successfully',
+        uuid: imageUuid,
+        articleIds: articleIdList,
+        articleCount: articleIdList.length,
+        originalName: req.file.originalname,
+        url: result.Location,
+        s3Key: s3Key,
+        contentType: req.file.mimetype,
+        size: req.file.size,
+        insertedRecords: insertResults
+      });
+
+    } catch (dbError) {
+      console.error('Database error:', dbError);
+      res.status(500).json({ error: 'Failed to save image metadata' });
+    }
 
   } catch (error) {
     console.error('Upload error:', error);
@@ -280,11 +324,15 @@ app.get('/', (req, res) => {
   res.json({
     message: 'S3 Upload API Server with SQLite',
     endpoints: {
-      upload: 'POST /api/upload (requires: file, articleId)',
+      upload: 'POST /api/upload (requires: file, articleId OR articleIds)',
       getArticleImages: 'GET /api/article/:articleId/images',
       getImageByUuid: 'GET /api/image/:uuid',
       listArticles: 'GET /api/articles',
       deleteImage: 'DELETE /api/image/:uuid'
+    },
+    uploadOptions: {
+      singleArticle: 'articleId: "article123"',
+      multipleArticles: 'articleIds: "article1,article2,article3" or articleIds: ["article1", "article2", "article3"]'
     },
     database: 'SQLite with article-image relationships',
     storage: 'AWS S3 (hetproductimages bucket)'
