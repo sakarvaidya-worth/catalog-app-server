@@ -321,59 +321,59 @@ app.get('/api/serve-image/:uuid', (req, res) => {
   }
 });
 
-app.delete('/api/image/:uuid', (req, res) => {
-  try {
-    const uuid = req.params.uuid;
+// app.delete('/api/image/:uuid', (req, res) => {
+//   try {
+//     const uuid = req.params.uuid;
 
-    db.get(
-      `SELECT s3_key FROM images WHERE uuid = ?`,
-      [uuid],
-      async (err, row) => {
-        if (err) {
-          console.error('Database error:', err);
-          return res.status(500).json({ error: 'Failed to find image' });
-        }
+//     db.get(
+//       `SELECT s3_key FROM images WHERE uuid = ?`,
+//       [uuid],
+//       async (err, row) => {
+//         if (err) {
+//           console.error('Database error:', err);
+//           return res.status(500).json({ error: 'Failed to find image' });
+//         }
 
-        if (!row) {
-          return res.status(404).json({ error: 'Image not found' });
-        }
+//         if (!row) {
+//           return res.status(404).json({ error: 'Image not found' });
+//         }
 
-        try {
-          const params = {
-            Bucket: BUCKET_NAME,
-            Key: row.s3_key
-          };
+//         try {
+//           const params = {
+//             Bucket: BUCKET_NAME,
+//             Key: row.s3_key
+//           };
 
-          await s3.deleteObject(params).promise();
+//           await s3.deleteObject(params).promise();
 
-          db.run(
-            `DELETE FROM images WHERE uuid = ?`,
-            [uuid],
-            function(deleteErr) {
-              if (deleteErr) {
-                console.error('Database delete error:', deleteErr);
-                return res.status(500).json({ error: 'Failed to delete image record' });
-              }
+//           db.run(
+//             `DELETE FROM images WHERE uuid = ?`,
+//             [uuid],
+//             function(deleteErr) {
+//               if (deleteErr) {
+//                 console.error('Database delete error:', deleteErr);
+//                 return res.status(500).json({ error: 'Failed to delete image record' });
+//               }
 
-              res.json({
-                message: 'Image deleted successfully',
-                uuid: uuid
-              });
-            }
-          );
+//               res.json({
+//                 message: 'Image deleted successfully',
+//                 uuid: uuid
+//               });
+//             }
+//           );
 
-        } catch (s3Error) {
-          console.error('S3 delete error:', s3Error);
-          res.status(500).json({ error: 'Failed to delete file from S3' });
-        }
-      }
-    );
+//         } catch (s3Error) {
+//           console.error('S3 delete error:', s3Error);
+//           res.status(500).json({ error: 'Failed to delete file from S3' });
+//         }
+//       }
+//     );
 
-  } catch (error) {
-    console.error('Delete error:', error);
-    res.status(500).json({ error: 'Failed to delete image' });
-  }
-});
+//   } catch (error) {
+//     console.error('Delete error:', error);
+//     res.status(500).json({ error: 'Failed to delete image' });
+//   }
+// });
 
 app.get('/api/images', (req, res) => {
   try {
@@ -441,74 +441,74 @@ app.get('/api/images', (req, res) => {
   }
 });
 
-app.delete('/api/images/all', async (req, res) => {
-  try {
-    // Get all images from database
-    db.all(`SELECT s3_key FROM images`, async (err, rows) => {
-      if (err) {
-        console.error('Database error:', err);
-        return res.status(500).json({ error: 'Failed to fetch images from database' });
-      }
+// app.delete('/api/images/all', async (req, res) => {
+//   try {
+//     // Get all images from database
+//     db.all(`SELECT s3_key FROM images`, async (err, rows) => {
+//       if (err) {
+//         console.error('Database error:', err);
+//         return res.status(500).json({ error: 'Failed to fetch images from database' });
+//       }
 
-      if (rows.length === 0) {
-        return res.json({ message: 'No images found to delete', deletedCount: 0 });
-      }
+//       if (rows.length === 0) {
+//         return res.json({ message: 'No images found to delete', deletedCount: 0 });
+//       }
 
-      try {
-        // Delete all objects from S3
-        const deleteParams = {
-          Bucket: BUCKET_NAME,
-          Delete: {
-            Objects: rows.map(row => ({ Key: row.s3_key })),
-            Quiet: false
-          }
-        };
+//       try {
+//         // Delete all objects from S3
+//         const deleteParams = {
+//           Bucket: BUCKET_NAME,
+//           Delete: {
+//             Objects: rows.map(row => ({ Key: row.s3_key })),
+//             Quiet: false
+//           }
+//         };
 
-        const deleteResult = await s3.deleteObjects(deleteParams).promise();
+//         const deleteResult = await s3.deleteObjects(deleteParams).promise();
 
-        // Clear all records from database
-        db.serialize(() => {
-          db.run(`DELETE FROM images`, (dbErr) => {
-            if (dbErr) {
-              console.error('Database delete error:', dbErr);
-              return res.status(500).json({
-                error: 'S3 cleanup successful but database cleanup failed',
-                s3DeletedCount: deleteResult.Deleted?.length || 0,
-                s3Errors: deleteResult.Errors || []
-              });
-            }
+//         // Clear all records from database
+//         db.serialize(() => {
+//           db.run(`DELETE FROM images`, (dbErr) => {
+//             if (dbErr) {
+//               console.error('Database delete error:', dbErr);
+//               return res.status(500).json({
+//                 error: 'S3 cleanup successful but database cleanup failed',
+//                 s3DeletedCount: deleteResult.Deleted?.length || 0,
+//                 s3Errors: deleteResult.Errors || []
+//               });
+//             }
 
-            db.run(`DELETE FROM articles WHERE article_id NOT IN (SELECT DISTINCT article_id FROM images)`, (cleanupErr) => {
-              if (cleanupErr) {
-                console.error('Articles cleanup error:', cleanupErr);
-              }
+//             db.run(`DELETE FROM articles WHERE article_id NOT IN (SELECT DISTINCT article_id FROM images)`, (cleanupErr) => {
+//               if (cleanupErr) {
+//                 console.error('Articles cleanup error:', cleanupErr);
+//               }
 
-              res.json({
-                message: 'All images deleted successfully',
-                s3DeletedCount: deleteResult.Deleted?.length || 0,
-                s3Errors: deleteResult.Errors || [],
-                databaseCleared: true,
-                orphanedArticlesRemoved: true
-              });
-            });
-          });
-        });
+//               res.json({
+//                 message: 'All images deleted successfully',
+//                 s3DeletedCount: deleteResult.Deleted?.length || 0,
+//                 s3Errors: deleteResult.Errors || [],
+//                 databaseCleared: true,
+//                 orphanedArticlesRemoved: true
+//               });
+//             });
+//           });
+//         });
 
-      } catch (s3Error) {
-        console.error('S3 delete error:', s3Error);
-        res.status(500).json({
-          error: 'Failed to delete images from S3',
-          details: s3Error.message,
-          foundImageCount: rows.length
-        });
-      }
-    });
+//       } catch (s3Error) {
+//         console.error('S3 delete error:', s3Error);
+//         res.status(500).json({
+//           error: 'Failed to delete images from S3',
+//           details: s3Error.message,
+//           foundImageCount: rows.length
+//         });
+//       }
+//     });
 
-  } catch (error) {
-    console.error('Delete all images error:', error);
-    res.status(500).json({ error: 'Failed to delete all images' });
-  }
-});
+//   } catch (error) {
+//     console.error('Delete all images error:', error);
+//     res.status(500).json({ error: 'Failed to delete all images' });
+//   }
+// });
 
 app.get('/', (req, res) => {
   res.json({
@@ -520,8 +520,8 @@ app.get('/', (req, res) => {
       serveImage: 'GET /api/serve-image/:uuid (serves image directly through server)',
       listArticles: 'GET /api/articles',
       listAllImages: 'GET /api/images?page=1&limit=50 (returns server_url for each image)',
-      deleteImage: 'DELETE /api/image/:uuid',
-      deleteAllImages: 'DELETE /api/images/all (DANGER: deletes all images from S3 and database)'
+      // deleteImage: 'DELETE /api/image/:uuid',
+      // deleteAllImages: 'DELETE /api/images/all (DANGER: deletes all images from S3 and database)'
     },
     uploadOptions: {
       singleArticle: 'articleId: "article123"',
