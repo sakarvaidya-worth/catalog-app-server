@@ -80,9 +80,9 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'At least one Article ID is required' });
     }
 
-    const imageUuid = uuidv4();
+    const baseUuid = uuidv4();
     const fileExtension = path.extname(req.file.originalname);
-    const s3Key = `${imageUuid}${fileExtension}`;
+    const s3Key = `${baseUuid}${fileExtension}`;
 
     const uploadParams = {
       Bucket: BUCKET_NAME,
@@ -107,6 +107,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
     // Insert image records for each article
     const imagePromises = articleIdList.map(artId => {
+      const imageUuid = uuidv4(); // Generate unique UUID for each article-image combination
       return new Promise((resolve, reject) => {
         db.run(
           `INSERT INTO images (uuid, article_id, original_name, s3_key, s3_url, content_type, size)
@@ -132,7 +133,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
       res.json({
         message: 'File uploaded successfully',
-        uuid: imageUuid,
         articleIds: articleIdList,
         articleCount: articleIdList.length,
         originalName: req.file.originalname,
@@ -319,6 +319,66 @@ app.delete('/api/image/:uuid', (req, res) => {
   }
 });
 
+app.get('/api/images', (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = (page - 1) * limit;
+
+    // Get total count
+    db.get(
+      `SELECT COUNT(*) as total FROM images`,
+      (err, countRow) => {
+        if (err) {
+          console.error('Database error:', err);
+          return res.status(500).json({ error: 'Failed to fetch image count' });
+        }
+
+        // Get paginated images with article info
+        db.all(
+          `SELECT
+             i.uuid,
+             i.article_id,
+             i.original_name,
+             i.s3_key,
+             i.s3_url,
+             i.content_type,
+             i.size,
+             i.created_at
+           FROM images i
+           ORDER BY i.created_at DESC
+           LIMIT ? OFFSET ?`,
+          [limit, offset],
+          (err, rows) => {
+            if (err) {
+              console.error('Database error:', err);
+              return res.status(500).json({ error: 'Failed to fetch images' });
+            }
+
+            const totalPages = Math.ceil(countRow.total / limit);
+
+            res.json({
+              images: rows,
+              pagination: {
+                currentPage: page,
+                totalPages: totalPages,
+                totalImages: countRow.total,
+                imagesPerPage: limit,
+                hasNextPage: page < totalPages,
+                hasPrevPage: page > 1
+              }
+            });
+          }
+        );
+      }
+    );
+
+  } catch (error) {
+    console.error('Get all images error:', error);
+    res.status(500).json({ error: 'Failed to get images' });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({
     message: 'S3 Upload API Server with SQLite',
@@ -327,6 +387,7 @@ app.get('/', (req, res) => {
       getArticleImages: 'GET /api/article/:articleId/images',
       getImageByUuid: 'GET /api/image/:uuid',
       listArticles: 'GET /api/articles',
+      listAllImages: 'GET /api/images?page=1&limit=50',
       deleteImage: 'DELETE /api/image/:uuid'
     },
     uploadOptions: {
