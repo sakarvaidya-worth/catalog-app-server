@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Configuration
-const SERVER_URL = 'http://localhost:5000';
+const SERVER_URL = 'http://43.205.171.58:5000';
 const UPLOAD_ENDPOINT = '/upload-image';
 
 // Color codes for console output
@@ -42,12 +42,12 @@ function extractSapIds(filename) {
 }
 
 /**
- * Upload image for a specific SAP ID
+ * Upload image for multiple SAP IDs
  * @param {string} imagePath - Path to the image file
- * @param {string} sapId - SAP ID to upload for
+ * @param {string[]} sapIds - Array of SAP IDs to upload for
  * @returns {Promise<Object>} Upload result
  */
-async function uploadImageForSap(imagePath, sapId) {
+async function uploadImageForSaps(imagePath, sapIds) {
     try {
         const form = new FormData();
         const imageBuffer = fs.readFileSync(imagePath);
@@ -58,7 +58,10 @@ async function uploadImageForSap(imagePath, sapId) {
             contentType: getContentType(filename)
         });
 
-        const response = await fetch(`${SERVER_URL}${UPLOAD_ENDPOINT}/${sapId}`, {
+        // Add SAP IDs to form data
+        form.append('saps', JSON.stringify(sapIds));
+
+        const response = await fetch(`${SERVER_URL}${UPLOAD_ENDPOINT}`, {
             method: 'POST',
             body: form,
             headers: form.getHeaders()
@@ -67,13 +70,23 @@ async function uploadImageForSap(imagePath, sapId) {
         const result = await response.json();
 
         if (response.ok) {
-            return { success: true, data: result, sapId };
+            return { success: true, data: result };
         } else {
-            return { success: false, error: result.error || 'Unknown error', sapId };
+            return { success: false, error: result.error || 'Unknown error' };
         }
     } catch (error) {
-        return { success: false, error: error.message, sapId };
+        return { success: false, error: error.message };
     }
+}
+
+/**
+ * Upload image for a specific SAP ID (legacy function for backward compatibility)
+ * @param {string} imagePath - Path to the image file
+ * @param {string} sapId - SAP ID to upload for
+ * @returns {Promise<Object>} Upload result
+ */
+async function uploadImageForSap(imagePath, sapId) {
+    return uploadImageForSaps(imagePath, [sapId]);
 }
 
 /**
@@ -167,39 +180,51 @@ async function processImageFolder(folderPath, options = {}) {
                 console.log(`  SAP IDs found: ${sapIds.join(', ')}`);
             }
 
-            // Upload for each SAP ID found in the filename
-            const uploadPromises = sapIds.map(sapId => uploadImageForSap(imagePath, sapId));
+            // Upload image once for all SAP IDs
+            const uploadResult = await uploadImageForSaps(imagePath, sapIds);
 
-            // Process uploads in batches based on concurrent setting
-            for (let i = 0; i < uploadPromises.length; i += concurrent) {
-                const batch = uploadPromises.slice(i, i + concurrent);
-                const batchResults = await Promise.all(batch);
+            if (uploadResult.success) {
+                const successCount = uploadResult.data.updatedSaps.length;
+                const failedSaps = uploadResult.data.notFoundSaps;
 
-                for (const result of batchResults) {
-                    results.total++;
+                results.total += sapIds.length;
+                results.successful += successCount;
+                results.failed += failedSaps.length;
 
-                    if (result.success) {
-                        results.successful++;
-                        if (verbose) {
-                            console.log(`  ${colors.green}✓ SAP ${result.sapId}: Upload successful (Image ID: ${result.data.imageId})${colors.reset}`);
-                        }
-                    } else {
-                        results.failed++;
-                        results.errors.push({
-                            file: file,
-                            sapId: result.sapId,
-                            error: result.error
+                if (verbose) {
+                    console.log(`  ${colors.green}✓ Image uploaded successfully (Image ID: ${uploadResult.data.imageId})${colors.reset}`);
+                    console.log(`  ${colors.green}✓ Updated SAPs: ${uploadResult.data.updatedSaps.join(', ')}${colors.reset}`);
+
+                    if (failedSaps.length > 0) {
+                        console.log(`  ${colors.yellow}⚠ SAPs not found in database: ${failedSaps.join(', ')}${colors.reset}`);
+                        failedSaps.forEach(sapId => {
+                            results.errors.push({
+                                file: file,
+                                sapId: sapId,
+                                error: 'Product not found in database'
+                            });
                         });
-
-                        if (verbose) {
-                            console.log(`  ${colors.red}✗ SAP ${result.sapId}: ${result.error}${colors.reset}`);
-                        }
-
-                        if (!skipErrors) {
-                            console.log(`${colors.red}Stopping due to error (use --skip-errors to continue)${colors.reset}`);
-                            process.exit(1);
-                        }
                     }
+                }
+            } else {
+                results.failed += sapIds.length;
+                results.total += sapIds.length;
+
+                sapIds.forEach(sapId => {
+                    results.errors.push({
+                        file: file,
+                        sapId: sapId,
+                        error: uploadResult.error
+                    });
+                });
+
+                if (verbose) {
+                    console.log(`  ${colors.red}✗ Upload failed: ${uploadResult.error}${colors.reset}`);
+                }
+
+                if (!skipErrors) {
+                    console.log(`${colors.red}Stopping due to error (use --skip-errors to continue)${colors.reset}`);
+                    process.exit(1);
                 }
             }
 
@@ -306,4 +331,4 @@ if (process.argv[1] === __filename) {
     });
 }
 
-export { processImageFolder, extractSapIds, uploadImageForSap };
+export { processImageFolder, extractSapIds, uploadImageForSap, uploadImageForSaps };

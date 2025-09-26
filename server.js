@@ -26,14 +26,33 @@ const upload = multer({
   }
 });
 
-app.post('/upload-image/:sap', upload.single('image'), async (req, res) => {
+app.post('/upload-image/:sap?', upload.single('image'), async (req, res) => {
   try {
     const { sap } = req.params;
+    const { saps } = req.body;
 
     if (!req.file) {
       return res.status(400).json({ error: 'No image file provided' });
     }
 
+    // Determine SAP IDs to process - either from params or body
+    let sapIds = [];
+    if (saps) {
+      try {
+        const parsedSaps = typeof saps === 'string' ? JSON.parse(saps) : saps;
+        if (Array.isArray(parsedSaps)) {
+          sapIds = parsedSaps.map(id => parseInt(id));
+        }
+      } catch (error) {
+        return res.status(400).json({ error: 'Invalid SAPs format' });
+      }
+    } else if (sap) {
+      sapIds = [parseInt(sap)];
+    } else {
+      return res.status(400).json({ error: 'No SAP ID(s) provided' });
+    }
+
+    // Generate single UUID for the image
     const imageId = uuidv4();
     const fileExtension = req.file.originalname.split('.').pop();
     const fileName = `${imageId}.${fileExtension}`;
@@ -46,27 +65,39 @@ app.post('/upload-image/:sap', upload.single('image'), async (req, res) => {
       ACL: 'private'
     };
 
+    // Upload image once to S3
     await s3.upload(uploadParams).promise();
 
     const productsRef = collection(db, 'products');
-    const q = query(productsRef, where('SAP', '==', parseInt(sap)));
-    const querySnapshot = await getDocs(q);
+    const updateResults = [];
+    const notFound = [];
 
-    if (querySnapshot.empty) {
-      return res.status(404).json({ error: 'Product not found with given SAP' });
+    // Update all products with the same imageId
+    for (const sapId of sapIds) {
+      const q = query(productsRef, where('SAP', '==', sapId));
+      const querySnapshot = await getDocs(q);
+
+      if (querySnapshot.empty) {
+        notFound.push(sapId);
+      } else {
+        const productDoc = querySnapshot.docs[0];
+        const productRef = doc(db, 'products', productDoc.id);
+
+        await updateDoc(productRef, {
+          imageid: imageId
+        });
+
+        updateResults.push(sapId);
+      }
     }
-
-    const productDoc = querySnapshot.docs[0];
-    const productRef = doc(db, 'products', productDoc.id);
-
-    await updateDoc(productRef, {
-      imageid: imageId
-    });
 
     res.status(200).json({
       message: 'Image uploaded successfully',
       imageId: imageId,
-      sap: sap
+      updatedSaps: updateResults,
+      notFoundSaps: notFound,
+      totalRequested: sapIds.length,
+      totalUpdated: updateResults.length
     });
 
   } catch (error) {
