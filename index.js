@@ -379,6 +379,75 @@ app.get('/api/images', (req, res) => {
   }
 });
 
+app.delete('/api/images/all', async (req, res) => {
+  try {
+    // Get all images from database
+    db.all(`SELECT s3_key FROM images`, async (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Failed to fetch images from database' });
+      }
+
+      if (rows.length === 0) {
+        return res.json({ message: 'No images found to delete', deletedCount: 0 });
+      }
+
+      try {
+        // Delete all objects from S3
+        const deleteParams = {
+          Bucket: BUCKET_NAME,
+          Delete: {
+            Objects: rows.map(row => ({ Key: row.s3_key })),
+            Quiet: false
+          }
+        };
+
+        const deleteResult = await s3.deleteObjects(deleteParams).promise();
+
+        // Clear all records from database
+        db.serialize(() => {
+          db.run(`DELETE FROM images`, (dbErr) => {
+            if (dbErr) {
+              console.error('Database delete error:', dbErr);
+              return res.status(500).json({
+                error: 'S3 cleanup successful but database cleanup failed',
+                s3DeletedCount: deleteResult.Deleted?.length || 0,
+                s3Errors: deleteResult.Errors || []
+              });
+            }
+
+            db.run(`DELETE FROM articles WHERE article_id NOT IN (SELECT DISTINCT article_id FROM images)`, (cleanupErr) => {
+              if (cleanupErr) {
+                console.error('Articles cleanup error:', cleanupErr);
+              }
+
+              res.json({
+                message: 'All images deleted successfully',
+                s3DeletedCount: deleteResult.Deleted?.length || 0,
+                s3Errors: deleteResult.Errors || [],
+                databaseCleared: true,
+                orphanedArticlesRemoved: true
+              });
+            });
+          });
+        });
+
+      } catch (s3Error) {
+        console.error('S3 delete error:', s3Error);
+        res.status(500).json({
+          error: 'Failed to delete images from S3',
+          details: s3Error.message,
+          foundImageCount: rows.length
+        });
+      }
+    });
+
+  } catch (error) {
+    console.error('Delete all images error:', error);
+    res.status(500).json({ error: 'Failed to delete all images' });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({
     message: 'S3 Upload API Server with SQLite',
@@ -388,7 +457,8 @@ app.get('/', (req, res) => {
       getImageByUuid: 'GET /api/image/:uuid',
       listArticles: 'GET /api/articles',
       listAllImages: 'GET /api/images?page=1&limit=50',
-      deleteImage: 'DELETE /api/image/:uuid'
+      deleteImage: 'DELETE /api/image/:uuid',
+      deleteAllImages: 'DELETE /api/images/all (DANGER: deletes all images from S3 and database)'
     },
     uploadOptions: {
       singleArticle: 'articleId: "article123"',
