@@ -168,9 +168,15 @@ app.get('/api/article/:articleId/images', (req, res) => {
           return res.status(500).json({ error: 'Failed to fetch images' });
         }
 
+        // Add server image URLs to the response
+        const imagesWithServerUrls = rows.map(row => ({
+          ...row,
+          server_url: `${req.protocol}://${req.get('host')}/api/serve-image/${row.uuid}`
+        }));
+
         res.json({
           articleId: articleId,
-          images: rows,
+          images: imagesWithServerUrls,
           count: rows.length
         });
       }
@@ -262,6 +268,56 @@ app.get('/api/articles', (req, res) => {
   } catch (error) {
     console.error('Get articles error:', error);
     res.status(500).json({ error: 'Failed to get articles' });
+  }
+});
+
+app.get('/api/serve-image/:uuid', (req, res) => {
+  try {
+    const uuid = req.params.uuid;
+
+    db.get(
+      `SELECT s3_key, content_type, original_name FROM images WHERE uuid = ?`,
+      [uuid],
+      async (err, row) => {
+        if (err) {
+          console.error('Database error:', err);
+          return res.status(500).json({ error: 'Failed to fetch image' });
+        }
+
+        if (!row) {
+          return res.status(404).json({ error: 'Image not found' });
+        }
+
+        try {
+          const params = {
+            Bucket: BUCKET_NAME,
+            Key: row.s3_key
+          };
+
+          // Get the image data from S3
+          const s3Object = await s3.getObject(params).promise();
+
+          // Set appropriate headers
+          res.set({
+            'Content-Type': row.content_type,
+            'Content-Length': s3Object.ContentLength,
+            'Cache-Control': 'public, max-age=31536000', // Cache for 1 year
+            'Content-Disposition': `inline; filename="${row.original_name}"`
+          });
+
+          // Send the image data
+          res.send(s3Object.Body);
+
+        } catch (s3Error) {
+          console.error('S3 error:', s3Error);
+          res.status(500).json({ error: 'Failed to retrieve image from storage' });
+        }
+      }
+    );
+
+  } catch (error) {
+    console.error('Serve image error:', error);
+    res.status(500).json({ error: 'Failed to serve image' });
   }
 });
 
@@ -357,8 +413,14 @@ app.get('/api/images', (req, res) => {
 
             const totalPages = Math.ceil(countRow.total / limit);
 
+            // Add server image URLs to the response
+            const imagesWithServerUrls = rows.map(row => ({
+              ...row,
+              server_url: `${req.protocol}://${req.get('host')}/api/serve-image/${row.uuid}`
+            }));
+
             res.json({
-              images: rows,
+              images: imagesWithServerUrls,
               pagination: {
                 currentPage: page,
                 totalPages: totalPages,
@@ -453,10 +515,11 @@ app.get('/', (req, res) => {
     message: 'S3 Upload API Server with SQLite',
     endpoints: {
       upload: 'POST /api/upload (requires: file, articleId OR articleIds)',
-      getArticleImages: 'GET /api/article/:articleId/images',
-      getImageByUuid: 'GET /api/image/:uuid',
+      getArticleImages: 'GET /api/article/:articleId/images (returns server_url for each image)',
+      getImageByUuid: 'GET /api/image/:uuid (returns signed S3 URL)',
+      serveImage: 'GET /api/serve-image/:uuid (serves image directly through server)',
       listArticles: 'GET /api/articles',
-      listAllImages: 'GET /api/images?page=1&limit=50',
+      listAllImages: 'GET /api/images?page=1&limit=50 (returns server_url for each image)',
       deleteImage: 'DELETE /api/image/:uuid',
       deleteAllImages: 'DELETE /api/images/all (DANGER: deletes all images from S3 and database)'
     },
