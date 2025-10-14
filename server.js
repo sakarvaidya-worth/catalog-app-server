@@ -150,6 +150,79 @@ app.get('/serve-image/:imageId', async (req, res) => {
   }
 });
 
+app.post('/upload-image-by-category', upload.single('image'), async (req, res) => {
+  try {
+    const { sap, subCategory } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+
+    if (!sap || !subCategory) {
+      return res.status(400).json({ error: 'SAP and Sub Category are required' });
+    }
+
+    // Query Firebase for unique product by SAP and Sub Category
+    const productsRef = collection(db, 'products');
+    const q = query(
+      productsRef,
+      where('SAP', '==', parseInt(sap)),
+      where('Sub Category', '==', subCategory)
+    );
+    const querySnapshot = await getDocs(q);
+
+    if (querySnapshot.empty) {
+      return res.status(404).json({
+        error: 'Product not found with given SAP and Sub Category',
+        sap: sap,
+        subCategory: subCategory
+      });
+    }
+
+    // Generate unique UUID for imageid
+    const imageId = uuidv4();
+    const fileExtension = req.file.originalname.split('.').pop();
+    const fileName = `${imageId}.${fileExtension}`;
+
+    // Upload image to S3
+    const uploadParams = {
+      Bucket: BUCKET_NAME,
+      Key: fileName,
+      Body: req.file.buffer,
+      ContentType: req.file.mimetype,
+      ACL: 'private'
+    };
+
+    await s3.upload(uploadParams).promise();
+
+    // Update product with imageid
+    const productDoc = querySnapshot.docs[0];
+    const productRef = doc(db, 'products', productDoc.id);
+
+    await updateDoc(productRef, {
+      imageid: imageId
+    });
+
+    const productData = productDoc.data();
+
+    res.status(200).json({
+      message: 'Image uploaded successfully',
+      imageId: imageId,
+      product: {
+        sap: productData.SAP,
+        subCategory: productData['Sub Category'],
+        category: productData.Category,
+        description: productData.Description
+      },
+      imageUrl: `${req.protocol}://${req.get('host')}/serve-image/${imageId}`
+    });
+
+  } catch (error) {
+    console.error('Error uploading image by category:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
 app.get('/product/:sap/image', async (req, res) => {
   try {
     const { sap } = req.params;
